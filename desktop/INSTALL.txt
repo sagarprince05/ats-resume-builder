@@ -1,0 +1,20 @@
+ATS Resume Builder for Windows
+==============================
+
+Option A - just run it
+  Double-click "ATS Resume Builder.exe". Nothing is installed; your resume is
+  saved automatically and will be there next time you open it.
+
+Option B - install with shortcuts
+  Double-click "Install.bat". It copies the app to your user folder
+  (%LOCALAPPDATA%\Programs\ATS Resume Builder), adds Start Menu and Desktop
+  shortcuts, and lists it under Settings > Apps. No administrator rights needed.
+  To remove it, run "Uninstall.bat" or use Settings > Apps.
+
+Notes
+  - The app opens in its own window using Microsoft Edge (already part of
+    Windows 11) or Google Chrome. No internet connection is needed.
+  - "Download PDF" opens the print dialog: choose "Save as PDF".
+  - Windows SmartScreen may warn the first time because the exe is not
+    code-signed. Click "More info" then "Run anyway".
+  - Your data stays on this PC: %LOCALAPPDATA%\ATS Resume Builder

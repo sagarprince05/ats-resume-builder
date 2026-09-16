@@ -1,0 +1,8 @@
+# Cloudflare Pages headers. Never cache the entry files, so a redeploy
+# shows up immediately.
+/index.html
+  Cache-Control: no-cache
+/sw.js
+  Cache-Control: no-cache
+/js/config.js
+  Cache-Control: no-cache

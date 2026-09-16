@@ -1,0 +1,112 @@
+/* =====================================================================
+   Resume document styles. Everything here renders inside .page and is
+   what gets printed to PDF. All templates are single-column, use real
+   text, standard headings and simple bullet lists so ATS parsers can
+   read them reliably.
+   ===================================================================== */
+
+.page {
+  --r-font: Arial, Helvetica, sans-serif;
+  --r-fs: 10.5pt;
+  --r-lh: 1.35;
+  --r-gap: 1;
+  --r-accent: #1f3a5f;
+  --r-margin: 0.6in;
+  padding: var(--r-margin);
+  font-family: var(--r-font);
+  font-size: var(--r-fs);
+  line-height: var(--r-lh);
+  color: #111;
+}
+.page[data-paper="letter"] { width: 8.5in; min-height: 11in; }
+.page[data-paper="a4"] { width: 210mm; min-height: 297mm; }
+
+.resume { width: 100%; }
+.resume a { color: inherit; text-decoration: none; }
+.resume p { margin: 0; }
+.resume ul { margin: 0.25em 0 0; padding-left: 1.15em; }
+.resume li { margin: 0 0 0.18em; padding-left: 0.1em; }
+.resume li::marker { color: #333; }
+
+/* Header */
+.r-header { margin-bottom: calc(0.7em * var(--r-gap)); }
+.r-name { font-size: 2.05em; font-weight: 700; line-height: 1.15; margin: 0; letter-spacing: 0.01em; }
+.r-title { font-size: 1.1em; margin: 0.15em 0 0.25em; color: #333; }
+.r-contact { font-size: 0.93em; color: #222; display: flex; flex-wrap: wrap; gap: 0.15em 0; }
+.r-contact span { white-space: nowrap; }
+.r-contact span + span::before { content: "|"; color: #888; margin: 0 0.5em; }
+
+/* Sections */
+.r-section { margin-top: calc(0.95em * var(--r-gap)); }
+.r-section h2 {
+  font-size: 1.05em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  border-bottom: 1px solid #222; padding-bottom: 0.15em; margin: 0 0 0.45em;
+  break-after: avoid;
+}
+.r-summary { text-align: left; }
+
+/* Items */
+.r-item { margin-bottom: calc(0.6em * var(--r-gap)); break-inside: avoid; }
+.r-item:last-child { margin-bottom: 0; }
+.r-item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1em; }
+.r-item-head .r-primary { font-weight: 700; }
+.r-item-head .r-date { white-space: nowrap; font-weight: 400; color: #333; }
+.r-item-sub { display: flex; justify-content: space-between; gap: 1em; color: #333; }
+.r-item-sub .r-secondary { font-style: italic; }
+.r-item-sub .r-loc { white-space: nowrap; }
+.r-item .r-desc { margin-top: 0.15em; }
+.r-meta { color: #444; font-size: 0.95em; }
+
+/* Skills */
+.r-skill-row { margin-bottom: 0.2em; }
+.r-skill-cat { font-weight: 700; }
+.r-skill-cat::after { content: ": "; }
+
+/* Inline lists (languages, certifications short form) */
+.r-inline-list { display: flex; flex-wrap: wrap; gap: 0.2em 0; }
+.r-inline-list span + span::before { content: "\2022"; margin: 0 0.5em; color: #777; }
+
+/* ---------- Template: Classic ---------- */
+.tpl-classic .r-header { text-align: center; }
+.tpl-classic .r-contact { justify-content: center; }
+
+/* ---------- Template: Modern ---------- */
+.tpl-modern .r-name { color: var(--r-accent); }
+.tpl-modern .r-header { border-bottom: 2px solid var(--r-accent); padding-bottom: 0.5em; }
+.tpl-modern .r-section h2 { color: var(--r-accent); border-bottom: 1px solid var(--r-accent); letter-spacing: 0.08em; }
+.tpl-modern .r-item-head .r-primary { color: #111; }
+.tpl-modern .resume li::marker { color: var(--r-accent); }
+
+/* ---------- Template: Minimal ---------- */
+.tpl-minimal .r-name { font-weight: 600; letter-spacing: -0.01em; }
+.tpl-minimal .r-title { color: #555; }
+.tpl-minimal .r-contact span + span::before { content: "\00b7"; margin: 0 0.45em; }
+.tpl-minimal .r-section h2 { border-bottom: 0; font-size: 0.9em; letter-spacing: 0.14em; color: #444; margin-bottom: 0.35em; padding-bottom: 0; }
+.tpl-minimal .r-item-head .r-date, .tpl-minimal .r-item-sub { color: #555; }
+
+/* ---------- Template: Compact ---------- */
+.tpl-compact { --r-gap: 0.7; }
+.tpl-compact .r-header { display: flex; justify-content: space-between; align-items: center; gap: 1.5em; border-bottom: 1.5px solid #222; padding-bottom: 0.4em; }
+.tpl-compact .r-identity { flex: 1 1 auto; }
+.tpl-compact .r-name { font-size: 1.75em; }
+.tpl-compact .r-title { margin: 0.05em 0 0; }
+.tpl-compact .r-contact { flex: 0 1 52%; justify-content: flex-end; text-align: right; font-size: 0.88em; line-height: 1.45; }
+.tpl-compact .r-section { margin-top: 0.6em; }
+.tpl-compact .r-section h2 { font-size: 0.95em; margin-bottom: 0.3em; }
+.tpl-compact .r-item { margin-bottom: 0.4em; }
+.tpl-compact .resume li { margin-bottom: 0.08em; }
+
+/* ---------- Template: Executive ---------- */
+.tpl-executive .r-header { text-align: center; border-top: 3px double #222; border-bottom: 3px double #222; padding: 0.5em 0; }
+.tpl-executive .r-name { font-size: 2.2em; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; }
+.tpl-executive .r-title { letter-spacing: 0.1em; text-transform: uppercase; font-size: 0.95em; color: #444; }
+.tpl-executive .r-contact { justify-content: center; }
+.tpl-executive .r-section h2 { text-align: center; border-bottom: 0; position: relative; letter-spacing: 0.15em; }
+.tpl-executive .r-section h2::after { content: ""; display: block; width: 3em; border-bottom: 1.5px solid #222; margin: 0.25em auto 0; }
+.tpl-executive .r-summary { text-align: center; padding: 0 1em; }
+
+/* ---------- Page break hints ---------- */
+@media print {
+  .r-section h2 { break-after: avoid-page; page-break-after: avoid; }
+  .r-item { page-break-inside: avoid; }
+}

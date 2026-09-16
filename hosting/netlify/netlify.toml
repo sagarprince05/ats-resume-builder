@@ -1,0 +1,20 @@
+# Netlify settings for the ATS Resume Builder site folder.
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+# Never cache the entry files, so a redeploy shows up immediately.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/js/config.js"
+  [headers.values]
+    Cache-Control = "no-cache"

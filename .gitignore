@@ -1,0 +1,20 @@
+# Build output. build/web/js/config.js may hold a baked-in API key: never commit it.
+build/
+dist/
+
+# Test runner dependencies and browser downloads
+tests/node_modules/
+tests/test-results/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Local convenience launcher with an absolute path to this machine
+Build with my key.bat

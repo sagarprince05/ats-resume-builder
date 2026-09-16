@@ -1,0 +1,13 @@
+{
+  "name": "ats-resume-builder-tests",
+  "private": true,
+  "type": "module",
+  "description": "Headless browser tests for the ATS Resume Builder (see ci.mjs).",
+  "scripts": {
+    "test": "node ci.mjs",
+    "test:site": "node ci.mjs /build/site-github/index.html /build/site-cloudflare/index.html"
+  },
+  "devDependencies": {
+    "playwright": "^1.50.0"
+  }
+}
