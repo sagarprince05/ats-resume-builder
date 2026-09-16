@@ -1,0 +1,134 @@
+# Builds the website folders and the Windows installer on every push and
+# pull request, runs the browser test suite against the built site, smoke
+# tests the Windows exe, keeps the results as downloadable artifacts, and
+# publishes the site to GitHub Pages from the main branch.
+#
+# GitHub Pages needs a one-time switch: repository Settings -> Pages ->
+# Build and deployment -> Source: "GitHub Actions". Until then the
+# deploy job is skipped gracefully.
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  site:
+    name: Website (build + browser tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build site folders (GitHub Pages, Cloudflare, Netlify)
+        shell: pwsh
+        run: |
+          ./hosting/build-site.ps1 -Target github
+          ./hosting/build-site.ps1 -Target cloudflare
+          ./hosting/build-site.ps1 -Target netlify
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tests/package-lock.json
+
+      - name: Install test runner
+        working-directory: tests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Browser tests (source tree + built sites)
+        working-directory: tests
+        run: node ci.mjs /index.html /build/site-github/index.html /build/site-cloudflare/index.html
+
+      - name: Keep the site folders
+        uses: actions/upload-artifact@v4
+        with:
+          name: website-folders
+          path: |
+            build/site-github.zip
+            build/site-cloudflare.zip
+            build/site-netlify.zip
+          if-no-files-found: error
+
+      - name: Prepare GitHub Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/site-github
+
+  windows:
+    name: Windows installer (build + smoke test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install --quiet pyinstaller
+
+      - name: Build the app and the installer
+        shell: pwsh
+        run: ./desktop/build.ps1
+
+      - name: Smoke test the built exe
+        shell: pwsh
+        run: |
+          $exe = "dist\ATS Resume Builder.exe"
+          if (-not (Test-Path $exe)) { throw "exe missing" }
+          if (-not (Test-Path "dist\ATS Resume Builder Setup.exe")) { throw "installer missing" }
+          $p = Start-Process -FilePath $exe -PassThru
+          $ok = $false
+          foreach ($i in 1..30) {
+            Start-Sleep -Seconds 1
+            try {
+              $page = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:47653/index.html"
+              $cfg  = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:47653/js/config.js"
+              $store = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:47653/__store"
+              if ($page.StatusCode -eq 200 -and $store.StatusCode -eq 200) { $ok = $true; break }
+            } catch { }
+          }
+          Get-Process | Where-Object { $_.Name -like "ATS Resume*" -or $_.Id -eq $p.Id } | Stop-Process -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "The exe did not serve the app on port 47653 within 30 s" }
+          if ($page.Content -notmatch "ATS Resume Builder") { throw "index.html content unexpected" }
+          if ($cfg.Content -notmatch "groqKey: ''") { throw "a key is baked into a CI build; that must never happen" }
+          Write-Host "exe serves the app, settings store answers, no key baked in."
+
+      - name: Keep the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/ATS Resume Builder Setup.exe
+            dist/ATS Resume Builder.exe
+          if-no-files-found: error
+
+  deploy-pages:
+    name: Publish to GitHub Pages
+    needs: [site, windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Fails only when Pages is not switched to "GitHub Actions" yet; that
+    # must not make the build look broken.
+    continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
