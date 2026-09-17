@@ -54,20 +54,34 @@
   const reply = (model, obj) => new W.Response(JSON.stringify({ model, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(obj) } }], usage: { prompt_tokens: 100, completion_tokens: 40 } }), { status: 200, headers: { 'content-type': 'application/json' } });
   const errorReply = (status, message) => new W.Response(JSON.stringify({ error: { message } }), { status, headers: { 'content-type': 'application/json' } });
   const blank = () => ({ personal: { fullName: '', title: '', email: '', phone: '', location: '', linkedin: '', website: '', github: '' }, summary: '', experience: [], education: [], skills: [], projects: [], certifications: [], awards: [], languages: [], custom: [], sectionOrder: ['summary', 'experience', 'skills', 'education'] });
+  const geminiReply = (model, obj) => new W.Response(JSON.stringify({ modelVersion: model, candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(obj) }] } }], usageMetadata: { promptTokenCount: 90, candidatesTokenCount: 30 } }), { status: 200, headers: { 'content-type': 'application/json' } });
   function installFakeGroq() {
     const realFetch = W.fetch.bind(W);
     W.fetch = async (url, init) => {
       const u = String(url);
       const isGroq = u.includes('api.groq.com') || u.includes('/api/groq');
-      if (!isGroq) return realFetch(url, init);
+      const isGemini = u.includes('generativelanguage.googleapis.com') || u.includes('/api/gemini');
+      if (!isGroq && !isGemini && !u.includes('/api/health')) return realFetch(url, init);
       const headers = (init && init.headers) || {};
-      const rec = { url: u, auth: headers.authorization || headers.Authorization || null, method: (init && init.method) || 'GET' };
+      const rec = { url: u, provider: isGemini ? 'gemini' : 'groq', auth: headers.authorization || headers.Authorization || headers['x-goog-api-key'] || null, method: (init && init.method) || 'GET' };
       calls.push(rec);
-      if (u.endsWith('/health')) return new W.Response(JSON.stringify({ ok: true, relay: 'groq', keySet: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (u.endsWith('/health')) return new W.Response(JSON.stringify({ ok: true, relay: 'ai', keys: { groq: true, gemini: true } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (isGemini && /\/models(\?|$)/.test(u)) return new W.Response(JSON.stringify({ models: [{ name: 'models/gemini-3.8-flash', displayName: 'Gemini 3.8 Flash', supportedGenerationMethods: ['generateContent'] }, { name: 'models/gemini-3.5-flash-lite', displayName: 'Gemini 3.5 Flash Lite', supportedGenerationMethods: ['generateContent'] }, { name: 'models/embedding-001', supportedGenerationMethods: ['embedContent'] }] }), { status: 200, headers: { 'content-type': 'application/json' } });
       if (u.endsWith('/models')) return new W.Response(JSON.stringify({ data: [{ id: 'openai/gpt-oss-120b' }, { id: 'llama-3.3-70b-versatile' }, { id: 'whisper-large-v3' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
       const body = JSON.parse(init.body);
+      if (isGemini) {
+        rec.model = decodeURIComponent((u.match(/models\/([^:]+):generateContent/) || [])[1] || '');
+        rec.schema = !!(body.generationConfig && body.generationConfig.responseSchema);
+        if (opts.mode === 'gemini-busy' || opts.mode === 'busy') return errorReply(503, 'The model is overloaded. Please try again later.');
+        const user = body.contents[0].parts[0].text;
+        if (user.includes('<job_description>')) {
+          const rj = JSON.parse(user.split('<resume_json>')[1].split('</resume_json>')[0]);
+          return geminiReply(rec.model, Object.assign(blank(), rj, { summary: 'GEMINI summary for ' + rj.personal.fullName + '.', changes: [{ section: 'Summary', description: 'Rewritten by Gemini' }], headlineSuggestion: '', coaching: [] }));
+        }
+        return geminiReply(rec.model, { ok: true });
+      }
       rec.model = body.model; rec.format = body.response_format && body.response_format.type;
-      if (opts.mode === 'busy') return errorReply(429, 'Rate limit reached');
+      if (opts.mode === 'busy' || opts.mode === 'groq-busy') return errorReply(429, 'Rate limit reached');
       if (opts.mode === 'busy-first' && body.model === 'openai/gpt-oss-120b') return errorReply(429, 'Rate limit reached');
       if (opts.mode === 'bad-key') return errorReply(401, 'Invalid API Key');
       if (opts.mode === 'no-schema' && rec.format === 'json_schema') return errorReply(400, 'response_format json_schema is not supported');
@@ -121,10 +135,10 @@
       assert([...D.querySelectorAll('button')].some(b => /Download/.test(b.textContent)), 'Download button missing');
     });
 
-    const relayConfigured = !!(W.APP_CONFIG && W.APP_CONFIG.groqProxy);
+    const relayConfigured = !!(W.APP_CONFIG && W.APP_CONFIG.relay);
     if (relayConfigured) {
       await test('missing relay falls back to per-user keys', async () => {
-        // This static test server has no /api/groq, so the health probe fails.
+        // This static test server has no /api/health, so the probe fails.
         eq(W.AI.usingProxy(), false, 'should not be in relay mode');
         eq(W.AI.isBuiltIn(), false, 'should not hide key settings');
         assert(!D.getElementById('btnAi').hidden, 'AI settings entry should be visible');
@@ -140,6 +154,8 @@
       installFakeGroq();
       [...D.querySelectorAll('button')].find(b => /AI settings/i.test(b.textContent)).click();
       const m = await waitFor(() => D.querySelector('.modal'));
+      const tabs = [...m.querySelectorAll('#aiProv [data-prov]')].map(b => b.dataset.prov);
+      eq(tabs.join(','), 'groq,gemini', 'provider tabs');
       const key = m.querySelector('#aiKey'); key.value = 'gsk_test_key_1234567890'; key.dispatchEvent(new W.Event('change', { bubbles: true }));
       await sleep(400);
       m.querySelector('#aiTest').click();
@@ -204,7 +220,7 @@
       const res = await W.AI.tailorResume(W.RB.sampleState(), JD);
       opts.mode = 'ok';
       eq(res.model, 'llama-3.3-70b-versatile', 'should have moved to the second model');
-      eq(res.fellBackFrom, 'openai/gpt-oss-120b');
+      eq(res.fellBackFrom, 'openai/gpt-oss-120b model');
       const tried = [...new Set(calls.map(c => c.model))];
       assert(tried[0] === 'openai/gpt-oss-120b' && tried[1] === 'llama-3.3-70b-versatile', 'order: ' + tried.join(','));
     });
@@ -214,6 +230,42 @@
       await W.AI.test('groq', 'gsk_test_key_1234567890', 'openai/gpt-oss-120b');
       opts.mode = 'ok';
       eq(calls.map(c => c.format).join(','), 'json_schema,json_object');
+    });
+
+    await test('Gemini transport: key header, generateContent URL, response schema', async () => {
+      calls.length = 0;
+      const ok = await W.AI.test('gemini', 'AQ.test_gemini_key_1234567890', 'gemini-3.8-flash');
+      eq(ok, true);
+      const c = calls.find(x => x.provider === 'gemini');
+      assert(c, 'no Gemini call made');
+      assert(/generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-3\.8-flash:generateContent$/.test(c.url), 'url: ' + c.url);
+      eq(c.auth, 'AQ.test_gemini_key_1234567890', 'x-goog-api-key header');
+      eq(c.schema, true, 'responseSchema should be sent');
+      eq(W.AI.load().gemini.key, '', 'test must not persist the key until Save');
+    });
+
+    await test('Groq busy on every model -> hands over to Gemini and says so', async () => {
+      // Add a Gemini key next to the Groq one (Groq stays the primary).
+      const cfg = W.AI.load(); cfg.gemini.key = 'AQ.test_gemini_key_1234567890'; W.AI.save(cfg);
+      eq(W.AI.alternates().map(a => a.provider).join(','), 'gemini');
+      calls.length = 0; opts.mode = 'groq-busy';
+      const res = await W.AI.tailorResume(W.RB.sampleState(), JD);
+      opts.mode = 'ok';
+      eq(res.providerName, 'Google Gemini');
+      eq(res.provider, 'gemini');
+      eq(res.fellBackFrom, 'Groq (openai/gpt-oss-120b)');
+      assert(res.state.summary.startsWith('GEMINI summary'), 'Gemini answer not applied');
+      const groqModels = [...new Set(calls.filter(c => c.provider === 'groq').map(c => c.model))];
+      eq(groqModels.length, 4, 'all four Groq models should have been tried first: ' + groqModels.join(','));
+      eq(calls.filter(c => c.provider === 'gemini').length, 1);
+      // Gemini in the change list, visible to the user.
+      const submit = [...D.querySelectorAll('button')].find(b => /^Submit/i.test(b.textContent.trim()));
+      opts.mode = 'groq-busy'; submit.click();
+      await waitFor(() => pageText().includes('GEMINI summary'), 30000);
+      opts.mode = 'ok';
+      await waitFor(() => /Rewritten by Google Gemini/.test(D.body.innerText), 5000);
+      // Back to Groq-only for the remaining tests.
+      const c2 = W.AI.load(); c2.gemini.key = ''; W.AI.save(c2);
     });
 
     await test('all models busy -> clear error, rule-based fallback keeps the resume', async () => {
@@ -242,10 +294,10 @@
       assert(res.keywords.matched.some(k => /aws|kubernetes|typescript/i.test(k)), 'expected AWS/Kubernetes/TypeScript to match: ' + res.keywords.matched.join(','));
     });
 
-    await test('relay mode: no key in the browser, calls go to /api/groq, settings hidden', async () => {
+    await test('relay mode: no key in the browser, calls go to /api/<provider>, settings hidden', async () => {
       await loadApp(); clearStorage();
       installFakeGroq(); calls.length = 0;
-      W.APP_CONFIG = Object.assign({}, W.APP_CONFIG, { groqProxy: '/api/groq' });
+      W.APP_CONFIG = Object.assign({}, W.APP_CONFIG, { relay: '/api' });
       // Re-run the AI layer now that a relay "exists" (the fake answers /health).
       const src = await (await fetch(SITE.replace(/index\.html.*$/, '') + 'js/ai.js', { cache: 'no-store' })).text();
       W.eval(src); await W.AI.ready; W.dispatchEvent(new W.Event('ai-config-changed'));
@@ -259,40 +311,57 @@
       const chat = calls.filter(c => c.url.includes('chat/completions'));
       assert(chat.length >= 2 && chat.every(c => c.url.startsWith('/api/groq') || c.url.includes('/api/groq/')), 'calls did not go through the relay: ' + chat.map(c => c.url).join(','));
       assert(chat.every(c => c.auth === null), 'a key was sent from the browser in relay mode');
+      // Groq busy behind the relay -> Gemini through the relay, still no key.
+      calls.length = 0; opts.mode = 'groq-busy';
+      const res = await W.AI.tailorResume(W.RB.sampleState(), JD);
+      opts.mode = 'ok';
+      eq(res.provider, 'gemini');
+      const g = calls.find(c => c.provider === 'gemini');
+      assert(g && /^\/api\/gemini\/models\/gemini-3\.8-flash:generateContent$/.test(g.url), 'gemini relay url: ' + (g && g.url));
+      eq(g.auth, null, 'no key in the browser for Gemini either');
     });
 
     await test('Cloudflare relay function: routing, key injection, guards', async () => {
-      const mod = await import('/hosting/cloudflare/functions/api/groq/' + encodeURIComponent('[[path]].js') + '?t=' + Date.now());
+      const mod = await import('/hosting/cloudflare/functions/api/' + encodeURIComponent('[[path]].js') + '?t=' + Date.now());
       const seen = []; const realFetch = window.fetch;
-      window.fetch = async (url, init) => { seen.push({ url: String(url), auth: init.headers.authorization }); return new Response('{"choices":[]}', { status: 200, headers: { 'content-type': 'application/json' } }); };
-      const call = async (path, o = {}, env = { GROQ_API_KEY: 'gsk_server' }) => { const r = await mod.onRequest({ request: new Request('https://x.pages.dev/api/groq/' + path, Object.assign({ method: 'GET' }, o)), env, params: { path: path.split('/') } }); return { status: r.status, body: await r.json() }; };
+      window.fetch = async (url, init) => { seen.push({ url: String(url), auth: init.headers.authorization || init.headers['x-goog-api-key'] }); return new Response('{"choices":[]}', { status: 200, headers: { 'content-type': 'application/json' } }); };
+      const ENV = { GROQ_API_KEY: 'gsk_server', GEMINI_API_KEY: 'AQ.server' };
+      const call = async (path, o = {}, env = ENV) => { const r = await mod.onRequest({ request: new Request('https://x.pages.dev/api/' + path, Object.assign({ method: 'GET' }, o)), env, params: { path: path.split('?')[0].split('/') } }); return { status: r.status, body: await r.json() }; };
       try {
-        const h = await call('health'); eq(h.status, 200); eq(h.body.ok, true); eq(h.body.keySet, true);
-        eq((await call('health', {}, {})).body.keySet, false);
-        eq((await call('chat/completions', { method: 'POST', body: '{}' })).status, 200);
-        eq(seen[0].auth, 'Bearer gsk_server', 'key must be added server-side'); eq(seen[0].url, 'https://api.groq.com/openai/v1/chat/completions');
-        eq((await call('models')).status, 200);
-        eq((await call('embeddings')).status, 404);
-        eq((await call('chat/completions')).status, 405);
-        eq((await call('chat/completions', { method: 'POST', body: '{}' }, {})).status, 500);
-        eq((await call('chat/completions', { method: 'POST', body: 'x'.repeat(500 * 1024) })).status, 413);
+        const h = await call('health'); eq(h.status, 200); eq(h.body.ok, true); eq(h.body.keys.groq, true); eq(h.body.keys.gemini, true);
+        eq((await call('health', {}, { GROQ_API_KEY: 'x' })).body.keys.gemini, false);
+        eq((await call('groq/chat/completions', { method: 'POST', body: '{}' })).status, 200);
+        eq(seen[0].auth, 'Bearer gsk_server', 'Groq key must be added server-side'); eq(seen[0].url, 'https://api.groq.com/openai/v1/chat/completions');
+        eq((await call('gemini/models/gemini-3.8-flash:generateContent', { method: 'POST', body: '{}' })).status, 200);
+        eq(seen[1].auth, 'AQ.server', 'Gemini key must be added server-side'); eq(seen[1].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent');
+        eq((await call('groq/models')).status, 200);
+        eq((await call('gemini/models?pageSize=200')).status, 200);
+        assert(seen[3].url.endsWith('/v1beta/models?pageSize=200'), 'query string should pass through: ' + seen[3].url);
+        eq((await call('groq/embeddings')).status, 404);
+        eq((await call('gemini/models/evil:streamGenerateContent', { method: 'POST', body: '{}' })).status, 404);
+        eq((await call('openai/chat/completions', { method: 'POST', body: '{}' })).status, 404);
+        eq((await call('groq/chat/completions')).status, 405);
+        eq((await call('groq/chat/completions', { method: 'POST', body: '{}' }, { GEMINI_API_KEY: 'x' })).status, 500);
+        eq((await call('groq/chat/completions', { method: 'POST', body: 'x'.repeat(500 * 1024) })).status, 413);
       } finally { window.fetch = realFetch; }
     });
 
     await test('Netlify relay function: routing, key injection, guards', async () => {
-      globalThis.process = { env: { GROQ_API_KEY: 'gsk_server' } };
-      const mod = await import('/hosting/netlify/netlify/functions/groq.mjs?t=' + Date.now());
+      globalThis.process = { env: { GROQ_API_KEY: 'gsk_server', GEMINI_API_KEY: 'AQ.server' } };
+      const mod = await import('/hosting/netlify/netlify/functions/relay.mjs?t=' + Date.now());
       const seen = []; const realFetch = window.fetch;
-      window.fetch = async (url, init) => { seen.push({ url: String(url), auth: init.headers.authorization }); return new Response('{"choices":[]}', { status: 200, headers: { 'content-type': 'application/json' } }); };
-      const call = async (path, o = {}) => { const r = await mod.default(new Request('https://x.netlify.app/api/groq/' + path, Object.assign({ method: 'GET' }, o))); return { status: r.status, body: await r.json() }; };
+      window.fetch = async (url, init) => { seen.push({ url: String(url), auth: init.headers.authorization || init.headers['x-goog-api-key'] }); return new Response('{"choices":[]}', { status: 200, headers: { 'content-type': 'application/json' } }); };
+      const call = async (path, o = {}) => { const r = await mod.default(new Request('https://x.netlify.app/api/' + path, Object.assign({ method: 'GET' }, o))); return { status: r.status, body: await r.json() }; };
       try {
-        const h = await call('health'); eq(h.status, 200); eq(h.body.ok, true);
-        eq((await call('chat/completions', { method: 'POST', body: '{}' })).status, 200);
+        const h = await call('health'); eq(h.status, 200); eq(h.body.ok, true); eq(h.body.keys.gemini, true);
+        eq((await call('groq/chat/completions', { method: 'POST', body: '{}' })).status, 200);
         eq(seen[0].auth, 'Bearer gsk_server'); eq(seen[0].url, 'https://api.groq.com/openai/v1/chat/completions');
-        eq((await call('embeddings')).status, 404);
-        eq((await call('chat/completions')).status, 405);
+        eq((await call('gemini/models/gemini-3.8-flash:generateContent', { method: 'POST', body: '{}' })).status, 200);
+        eq(seen[1].auth, 'AQ.server'); eq(seen[1].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent');
+        eq((await call('groq/embeddings')).status, 404);
+        eq((await call('groq/chat/completions')).status, 405);
         globalThis.process = { env: {} };
-        eq((await call('chat/completions', { method: 'POST', body: '{}' })).status, 500);
+        eq((await call('groq/chat/completions', { method: 'POST', body: '{}' })).status, 500);
       } finally { window.fetch = realFetch; delete globalThis.process; }
     });
 

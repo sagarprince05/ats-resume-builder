@@ -2,9 +2,11 @@
    AI layer. Two jobs:
      1. parseResume(text)       - raw resume text -> structured fields
      2. tailorResume(state, jd) - rewrite the resume for a job description
-   One provider, Groq, called straight from the browser through its
-   OpenAI-compatible chat endpoint and asked for schema-constrained JSON
-   so the reply always fits our data model.
+   Two free providers, both called straight from the browser (or through
+   the site's relay when hosted): Groq first, Google Gemini as the backup.
+   Both are asked for schema-constrained JSON so the reply always fits our
+   data model. If the provider in use is busy on every model it offers,
+   the same request is handed to the other one.
    Exposes window.AI
    ===================================================================== */
 (function () {
@@ -31,15 +33,32 @@
       prefer: ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'llama-3.1-8b-instant'],
       // Model families Groq has retired.
       dead: /^(llama-3\.0|llama3-|mixtral-8x7b|gemma-7b|gemma2-9b)/
+    },
+    gemini: {
+      id: 'gemini', name: 'Google Gemini',
+      keyHint: 'Paste your Gemini API key',
+      keyUrl: 'aistudio.google.com → Get API key',
+      note: 'Free, no card needed. Free keys have lower daily limits than Groq, so it works best as the backup.',
+      defaultModel: 'gemini-3.8-flash',
+      models: [
+        { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', note: 'Recommended' },
+        { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', note: 'Highest quality, tighter limits' },
+        { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite', note: 'Fastest and cheapest' }
+      ],
+      prefer: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+      // Model families Google has retired for new keys.
+      dead: /^(models\/)?gemini-(1|2)\./
     }
   };
-  const PROVIDER_LIST = [PROVIDERS.groq];
+  const PROVIDER_LIST = [PROVIDERS.groq, PROVIDERS.gemini];
+  const IDS = PROVIDER_LIST.map(p => p.id);
 
   /* ---------------- settings ---------------- */
   function blank() {
     return {
-      provider: 'groq',
+      provider: 'groq',   // the larger free quota, so it goes first
       groq: { key: '', model: PROVIDERS.groq.defaultModel },
+      gemini: { key: '', model: PROVIDERS.gemini.defaultModel },
       useForParse: true
     };
   }
@@ -47,14 +66,15 @@
     let raw = {};
     try { raw = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {}; } catch (e) { raw = {}; }
     const cfg = blank();
-    // Settings saved by older builds may hold other providers; only the
-    // Groq entry is kept.
-    if (raw.groq && typeof raw.groq === 'object') Object.assign(cfg.groq, { key: String(raw.groq.key || ''), model: String(raw.groq.model || cfg.groq.model) });
+    IDS.forEach(p => {
+      if (raw[p] && typeof raw[p] === 'object') Object.assign(cfg[p], { key: String(raw[p].key || ''), model: String(raw[p].model || cfg[p].model) });
+      // Drop model IDs the provider has since retired, so an old saved
+      // setting cannot leave the app permanently broken.
+      if (PROVIDERS[p].dead.test(cfg[p].model)) cfg[p].model = PROVIDERS[p].defaultModel;
+    });
+    if (PROVIDERS[raw.provider]) cfg.provider = raw.provider;
     if (typeof raw.useForParse === 'boolean') cfg.useForParse = raw.useForParse;
-    if (BUILT_IN) cfg.useForParse = true;   // nothing to configure, so use it everywhere
-    // Drop model IDs Groq has since retired, so an old saved setting
-    // cannot leave the app permanently broken.
-    if (PROVIDERS.groq.dead.test(cfg.groq.model)) cfg.groq.model = PROVIDERS.groq.defaultModel;
+    if (BUILT_IN || proxyOk) cfg.useForParse = true;   // nothing to configure, so use it everywhere
     return cfg;
   }
 
@@ -74,47 +94,79 @@
   }
   function save(cfg) { try { localStorage.setItem(STORE_KEY, JSON.stringify(cfg)); } catch (e) { /* ignore */ } }
 
-  /* Where Groq is reached. Direct from the browser by default; a hosted
-     copy can instead point at a relay on the same site (APP_CONFIG.groqProxy,
-     e.g. '/api/groq') that adds the key server-side, so no key ever
-     reaches the browser. */
-  const GROQ_DIRECT = 'https://api.groq.com/openai/v1';
-  const PROXY = String((window.APP_CONFIG || {}).groqProxy || '').trim().replace(/\/+$/, '');
-  let proxyOk = !!PROXY;      // flipped off if the relay turns out to be missing
-  function apiBase() { return proxyOk ? PROXY : GROQ_DIRECT; }
-  function authHeaders(key) { return proxyOk ? {} : { 'authorization': 'Bearer ' + key }; }
+  /* ---------------- where the providers are reached ---------------- */
+  /* Direct from the browser by default. A hosted copy can instead point at
+     a relay on the same site (APP_CONFIG.relay, e.g. '/api') that adds the
+     keys server-side, so no key ever reaches the browser. */
+  const DIRECT = {
+    groq: 'https://api.groq.com/openai/v1',
+    gemini: 'https://generativelanguage.googleapis.com/v1beta'
+  };
+  const CFG = window.APP_CONFIG || {};
+  const RELAY = String(CFG.relay || (CFG.groqProxy ? String(CFG.groqProxy).replace(/\/groq\/?$/, '') : '') || '').trim().replace(/\/+$/, '');
+  let proxyOk = !!RELAY;          // flipped off if the relay turns out to be missing
+  // Which providers the relay has keys for. Optimistic until the health
+  // probe answers, so the app never starts in a keyless state by accident.
+  let relayKeys = RELAY ? { groq: true, gemini: true } : {};
   function usingProxy() { return proxyOk; }
+  function apiBase(p) { return proxyOk ? `${RELAY}/${p}` : DIRECT[p]; }
+  function authHeaders(p, key) {
+    if (proxyOk) return {};
+    return p === 'gemini' ? { 'x-goog-api-key': key } : { 'authorization': 'Bearer ' + key };
+  }
 
   /* If the page was deployed somewhere without the relay (plain static
      hosting), fall back to per-user keys instead of failing every call. */
   const ready = (async function () {
-    if (!PROXY) return;
+    if (!RELAY) return;
     try {
-      const r = await fetch(PROXY + '/health', { cache: 'no-store' });
+      const r = await fetch(RELAY + '/health', { cache: 'no-store' });
       const j = r.ok ? await r.json().catch(() => null) : null;
       proxyOk = !!(j && j.ok);
+      relayKeys = (j && j.keys) || {};
+      if (proxyOk && !IDS.some(p => relayKeys[p])) proxyOk = false;   // relay exists but holds no key
     } catch (e) { proxyOk = false; }
     if (!proxyOk) window.dispatchEvent(new Event('ai-config-changed'));
   })();
 
-  /* Key baked in at build time, or a relay on the server. Either way the
-     app uses it silently and hides every API-key control. */
+  /* Keys baked in at build time. When any is present the app uses them
+     silently and hides every API-key control. */
   const BUILT_IN = (function () {
-    const c = window.APP_CONFIG || {};
-    const key = String(c.groqKey || '').trim();
-    if (!key) return null;
-    return { key, model: String(c.groqModel || '').trim() || PROVIDERS.groq.defaultModel };
+    const keys = {};
+    const g = String(CFG.groqKey || '').trim(); if (g) keys.groq = { key: g, model: String(CFG.groqModel || '').trim() || PROVIDERS.groq.defaultModel };
+    const m = String(CFG.geminiKey || '').trim(); if (m) keys.gemini = { key: m, model: String(CFG.geminiModel || '').trim() || PROVIDERS.gemini.defaultModel };
+    if (!Object.keys(keys).length) return null;
+    return keys;
   })();
   function isBuiltIn() { return !!BUILT_IN || proxyOk; }
 
-  function active(cfg) {
-    if (proxyOk) return { provider: 'groq', spec: PROVIDERS.groq, key: 'relay', model: String((window.APP_CONFIG || {}).groqModel || '').trim() || PROVIDERS.groq.defaultModel, builtIn: true, proxy: true };
-    if (BUILT_IN) return { provider: 'groq', spec: PROVIDERS.groq, key: BUILT_IN.key, model: BUILT_IN.model, builtIn: true };
-    cfg = cfg || load();
-    return { provider: 'groq', spec: PROVIDERS.groq, key: cfg.groq.key, model: cfg.groq.model };
+  /* The preferred provider: config's choice if it has a key, else the
+     first one that does (Groq before Gemini). */
+  function primary(has) {
+    const want = String(CFG.provider || '').trim();
+    if (has(want)) return want;
+    return IDS.find(has) || 'groq';
   }
-  function isConfigured() { return !!active().key; }
-  function providerName() { const a = active(); return a.spec ? a.spec.name : ''; }
+  function entry(cfg, p) {
+    if (proxyOk) return relayKeys[p] ? { provider: p, spec: PROVIDERS[p], key: 'relay', model: String(CFG[p + 'Model'] || '').trim() || PROVIDERS[p].defaultModel, builtIn: true, proxy: true } : null;
+    if (BUILT_IN) return BUILT_IN[p] ? { provider: p, spec: PROVIDERS[p], key: BUILT_IN[p].key, model: BUILT_IN[p].model, builtIn: true } : null;
+    cfg = cfg || load();
+    return cfg[p] && cfg[p].key ? { provider: p, spec: PROVIDERS[p], key: cfg[p].key, model: cfg[p].model } : null;
+  }
+  const none = p => ({ provider: p, spec: PROVIDERS[p], key: '', model: PROVIDERS[p].defaultModel });
+  function active(cfg) {
+    if (proxyOk) return entry(null, primary(p => !!relayKeys[p])) || none('groq');
+    if (BUILT_IN) return entry(null, primary(p => !!BUILT_IN[p])) || none('groq');
+    cfg = cfg || load();
+    return { provider: cfg.provider, spec: PROVIDERS[cfg.provider], key: cfg[cfg.provider].key, model: cfg[cfg.provider].model };
+  }
+  /* Other providers that also have a key, for cross-provider fallback. */
+  function alternates(cfg) {
+    const a = active(cfg);
+    return IDS.filter(p => p !== a.provider).map(p => entry(cfg, p)).filter(Boolean);
+  }
+  function isConfigured() { const a = active(); return !!(a && a.key); }
+  function providerName() { const a = active(); return a && a.spec ? a.spec.name : ''; }
 
   /* ---------------- schemas ---------------- */
   const S = t => ({ type: t });
@@ -144,6 +196,20 @@
     coaching: arr(obj({ where: S('string'), bullet: S('string'), question: S('string') }))
   }));
 
+  /* Gemini's responseSchema accepts a subset of JSON Schema; drop the
+     keywords it may reject and keep a stable property order. */
+  function toGeminiSchema(node) {
+    if (Array.isArray(node)) return node.map(toGeminiSchema);
+    if (!node || typeof node !== 'object') return node;
+    const out = {};
+    Object.keys(node).forEach(k => {
+      if (k === 'additionalProperties') return;
+      out[k] = toGeminiSchema(node[k]);
+    });
+    if (out.type === 'object' && out.properties) out.propertyOrdering = Object.keys(out.properties);
+    return out;
+  }
+
   const DATA_MODEL_NOTES = `Field conventions:
 - Dates are short strings exactly as a resume would print them ("Jan 2021", "2019", "Present"). For experience, set current=true and end="" when the role is ongoing.
 - experience.bullets, projects.bullets and custom items' bullets are arrays of plain sentences, one achievement each, no leading bullet characters.
@@ -157,19 +223,18 @@
   const OVERLOADED = /high demand|overloaded|try again later|resource.?exhausted|unavailable/i;
   const isBusy = (status, msg) => status === 503 || status === 429 || (status >= 500 && OVERLOADED.test(msg || ''));
 
-  /* ---------------- transport: Groq (OpenAI-compatible) ---------------- */
-  const GROQ_FALLBACKS = ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'llama-3.1-8b-instant'];
-  const GROQ_STRICT = /^openai\/gpt-oss|^qwen\//;   // models that enforce a JSON schema exactly
-
-  async function callGroq(args) {
-    const chain = [args.model].concat(GROQ_FALLBACKS.filter(m => m !== args.model));
+  /* Try the chosen model, then the provider's fallback models, moving on
+     only when a model is busy or missing. */
+  async function withModelChain(label, args, chain, once) {
     const tried = [];
     let lastErr = null;
     for (const model of chain) {
       tried.push(model);
       try {
-        const out = await callGroqOnce(Object.assign({}, args, { model, retries: model === args.model ? [1200, 2500] : [800] }));
-        if (model !== args.model) out.fellBackFrom = args.model;
+        // Full backoff on the chosen model; fallbacks get one quick retry so
+        // the worst case stays short.
+        const out = await once(Object.assign({}, args, { model, retries: model === args.model ? [1200, 2500] : [800] }));
+        if (model !== args.model) out.fellBackFrom = args.model + ' model';
         return out;
       } catch (e) {
         if (e.name === 'AbortError') throw e;
@@ -177,13 +242,31 @@
         if (!(e.busy || e.status === 404)) throw e;
       }
     }
-    const err = new Error(`Groq is busy on every model I tried (${tried.join(', ')}). Wait a minute and press Retry.`);
+    const err = new Error(`${label} is busy on every model I tried (${tried.join(', ')}). Wait a minute and press Retry.`);
     err.busy = true;
     throw lastErr && !lastErr.busy ? lastErr : err;
   }
+  /* Brief retries with backoff while a model is busy. */
+  async function postWithRetries(post, body, detail, retries) {
+    let res = await post(body);
+    for (const wait of (retries || [1200, 2500])) {
+      if (!isBusy(res.status, detail(res))) break;
+      await new Promise(r => setTimeout(r, wait));
+      res = await post(body);
+    }
+    return res;
+  }
+  const busyError = (res, label, detail) => { const e = httpError(res, label, detail); e.busy = true; e.status = res.status; return e; };
 
+  /* ---------------- transport: Groq (OpenAI-compatible) ---------------- */
+  const GROQ_FALLBACKS = ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'llama-3.1-8b-instant'];
+  const GROQ_STRICT = /^openai\/gpt-oss|^qwen\//;   // models that enforce a JSON schema exactly
+
+  function callGroq(args) {
+    return withModelChain('Groq', args, [args.model].concat(GROQ_FALLBACKS.filter(m => m !== args.model)), callGroqOnce);
+  }
   async function callGroqOnce({ key, model, system, user, schema, maxTokens, signal, retries }) {
-    const url = apiBase() + '/chat/completions';
+    const url = apiBase('groq') + '/chat/completions';
     const base = {
       model, max_completion_tokens: maxTokens, temperature: 0.3,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }]
@@ -196,24 +279,19 @@
     ];
     const post = fmt => send(url, {
       method: 'POST', signal,
-      headers: Object.assign({ 'content-type': 'application/json' }, authHeaders(key)),
+      headers: Object.assign({ 'content-type': 'application/json' }, authHeaders('groq', key)),
       body: JSON.stringify(Object.assign({}, base, { response_format: fmt }))
     }, 'Groq');
     const detail = r => (r.json && r.json.error && (r.json.error.message || r.json.error)) ? String(r.json.error.message || r.json.error) : '';
 
-    let res = await post(formats[0]);
-    for (const wait of (retries || [1200, 2500])) {
-      if (!isBusy(res.status, detail(res))) break;
-      await new Promise(r => setTimeout(r, wait));
-      res = await post(formats[0]);
-    }
-    if (isBusy(res.status, detail(res))) { const e = httpError(res, 'Groq', detail(res)); e.busy = true; e.status = res.status; throw e; }
+    let res = await postWithRetries(post, formats[0], detail, retries);
+    if (isBusy(res.status, detail(res))) throw busyError(res, 'Groq', detail(res));
     if (res.status === 404) { const e = httpError(res, 'Groq', detail(res)); e.status = 404; throw e; }
     if (res.status === 400) {
       // Schema not accepted by this model: fall back to JSON-object mode.
       const retry = await post(formats[1]);
       if (retry.ok) res = retry;
-      else if (isBusy(retry.status, detail(retry))) { const e = httpError(retry, 'Groq', detail(retry)); e.busy = true; e.status = retry.status; throw e; }
+      else if (isBusy(retry.status, detail(retry))) throw busyError(retry, 'Groq', detail(retry));
       else throw httpError(res, 'Groq', detail(res) || detail(retry));
     }
     if (!res.ok) throw httpError(res, 'Groq', detail(res));
@@ -225,6 +303,63 @@
     if (!text) throw new Error('Groq returned no text.');
     const u = data.usage || {};
     return { text, usage: { input: u.prompt_tokens || 0, output: u.completion_tokens || 0 }, model: data.model || model };
+  }
+
+  /* ---------------- transport: Gemini ---------------- */
+  /* The newest Flash is the most congested on the free tier; the Lite
+     models usually answer immediately and are still good at this task. */
+  const GEMINI_FALLBACKS = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.5-flash'];
+
+  function callGemini(args) {
+    return withModelChain('Gemini', args, [args.model].concat(GEMINI_FALLBACKS.filter(m => m !== args.model)), callGeminiOnce);
+  }
+  async function callGeminiOnce({ key, model, system, user, schema, maxTokens, signal, retries }) {
+    // Gemini 3.x rejects temperature / topP / topK, so send neither those
+    // nor any thinking config: the model defaults are what we want.
+    const body = {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts: [{ text: user }] }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: toGeminiSchema(schema),
+        maxOutputTokens: maxTokens
+      }
+    };
+    const url = `${apiBase('gemini')}/models/${encodeURIComponent(model)}:generateContent`;
+    const post = b => send(url, {
+      method: 'POST', signal,
+      headers: Object.assign({ 'content-type': 'application/json' }, authHeaders('gemini', key)),
+      body: JSON.stringify(b)
+    }, 'Gemini');
+    const detail = r => (r.json && r.json.error && r.json.error.message) || '';
+
+    let res = await postWithRetries(post, body, detail, retries);
+    if (isBusy(res.status, detail(res))) throw busyError(res, 'Gemini', detail(res));
+    if (res.status === 404) { const e = httpError(res, 'Gemini', detail(res)); e.status = 404; throw e; }
+    // Some model versions reject the schema itself. Fall back to plain JSON
+    // mode and lean on the prompt, rather than failing the whole request.
+    if (!res.ok && (res.status === 400 || res.status >= 500)) {
+      const noSchema = JSON.parse(JSON.stringify(body));
+      delete noSchema.generationConfig.responseSchema;
+      noSchema.systemInstruction.parts[0].text += '\n\nReturn a single JSON object matching the described fields exactly. Output nothing but that JSON.';
+      const retry = await post(noSchema);
+      if (retry.ok) res = retry;
+      else if (isBusy(retry.status, detail(retry))) throw busyError(retry, 'Gemini', detail(retry));
+      else throw httpError(res, 'Gemini', detail(res) || detail(retry));
+    }
+    if (!res.ok) throw httpError(res, 'Gemini', detail(res));
+    const data = res.json;
+    if (data.promptFeedback && data.promptFeedback.blockReason) throw new Error(`Gemini blocked the request (${data.promptFeedback.blockReason}).`);
+    const cand = (data.candidates || [])[0];
+    if (!cand) throw new Error('Gemini returned no result.');
+    if (cand.finishReason === 'MAX_TOKENS') throw new Error('The response was cut short. Try a shorter resume or job description, or pick a different model.');
+    if (cand.finishReason === 'SAFETY' || cand.finishReason === 'PROHIBITED_CONTENT') throw new Error('Gemini stopped for safety reasons. Try rewording the job description.');
+    if (cand.finishReason === 'RECITATION') throw new Error('Gemini stopped because the output looked like recited text. Try again.');
+    // Thinking models return reasoning parts alongside the answer; keep only the answer.
+    const text = ((cand.content || {}).parts || []).filter(p => p && typeof p.text === 'string' && !p.thought).map(p => p.text).join('').trim();
+    if (!text) throw new Error('Gemini returned no text.');
+    const u = data.usageMetadata || {};
+    return { text, usage: { input: u.promptTokenCount || 0, output: u.candidatesTokenCount || 0 }, model: data.modelVersion || model };
   }
 
   /* ---------------- shared HTTP helpers ---------------- */
@@ -246,7 +381,7 @@
     if ((res.status === 401 || res.status === 403) && proxyOk) return new Error(`The site's ${label} key was rejected. The site owner needs to update it.${d}`);
     if (res.status === 401 || res.status === 403) return new Error(`The ${label} API key was rejected or lacks access to this model.${d}`);
     if (res.status === 404) return new Error(`That ${label} model was not found. Pick a different model in AI settings.${d}`);
-    if (res.status === 429) return new Error(`${label} rate limit reached. Wait a moment and try again.`);
+    if (res.status === 429) return new Error(`${label} rate limit reached${label === 'Gemini' ? ' (free keys have low limits)' : ''}. Wait a moment and try again.`);
     // Keep the server's own wording on 5xx: it usually explains the cause.
     if (res.status >= 500) return new Error(`${label} server error (${res.status}).${d || ' Try again in a moment.'}`);
     return new Error(`${label} API error (${res.status}).${d}`);
@@ -260,14 +395,32 @@
     catch (e) { throw new Error(`${label} returned something that was not valid JSON. Try again, or switch model in AI settings.`); }
   }
 
+  const TRANSPORT = { groq: callGroq, gemini: callGemini };
+
+  /* Run on the active provider; if it is busy everywhere and the other
+     provider has a key, hand the same request to that one. */
   async function call(opts) {
-    const a = active();
-    if (!a.key) throw new Error('No Groq API key set. Open AI settings to add one.');
-    const res = await callGroq(Object.assign({ key: a.key, model: a.model }, opts));
-    return {
-      data: parseJson(res.text, 'Groq'), usage: res.usage, model: res.model, provider: 'groq',
-      providerName: PROVIDERS.groq.name, fellBackFrom: res.fellBackFrom || ''
-    };
+    const cfg = load();
+    const a = active(cfg);
+    if (!a || !a.key) throw new Error('No AI key set. Open AI settings to add a free Groq or Gemini key.');
+    const candidates = [a].concat(alternates(cfg));
+    let lastErr = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      try {
+        const res = await TRANSPORT[c.provider](Object.assign({ key: c.key, model: c.model }, opts));
+        return {
+          data: parseJson(res.text, c.spec.name), usage: res.usage, model: res.model, provider: c.provider,
+          providerName: c.spec.name,
+          fellBackFrom: i > 0 ? `${a.spec.name} (${a.model})` : (res.fellBackFrom || '')
+        };
+      } catch (e) {
+        if (e.name === 'AbortError') throw e;
+        lastErr = e;
+        if (!e.busy) throw e;                 // a real error: do not mask it by switching provider
+      }
+    }
+    throw lastErr;
   }
 
   /* ---------------- conversions ---------------- */
@@ -365,32 +518,43 @@ ${DATA_MODEL_NOTES}`;
   }
 
   /* ---------------- settings helpers ---------------- */
+  /* Test one provider's key on its own (no fallback to the other), so the
+     dialog reports on exactly what was typed. */
   async function test(provider, key, model) {
     const prev = load();
     const next = JSON.parse(JSON.stringify(prev));
-    next.groq.key = key; next.groq.model = model;
+    next.provider = provider; next[provider].key = key; next[provider].model = model;
     save(next);
     try {
       // Thinking models spend part of maxOutputTokens on reasoning, so keep this generous.
-      const { data } = await call({ system: 'Reply with the requested JSON only.', user: 'Return {"ok": true}.', schema: obj({ ok: S('boolean') }), effort: 'low', maxTokens: 8192 });
-      return !!data.ok;
-    } catch (e) {
-      save(prev);
-      throw e;
+      const res = await TRANSPORT[provider]({ key, model, system: 'Reply with the requested JSON only.', user: 'Return {"ok": true}.', schema: obj({ ok: S('boolean') }), effort: 'low', maxTokens: 8192 });
+      return !!parseJson(res.text, PROVIDERS[provider].name).ok;
+    } finally {
+      save(prev);   // the dialog saves for real only when Save is pressed
     }
   }
 
   /* Live model list, so the dropdown never goes stale. */
   async function listModels(provider, key) {
     if (!key) return null;
-    const res = await send(apiBase() + '/models', { headers: authHeaders(key) }, 'Groq');
+    const spec = PROVIDERS[provider];
+    if (provider === 'gemini') {
+      const res = await send(apiBase('gemini') + '/models?pageSize=200', { headers: authHeaders('gemini', key) }, 'Gemini');
+      if (!res.ok) throw httpError(res, 'Gemini', (res.json && res.json.error && res.json.error.message) || '');
+      return (res.json.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes('generateContent') && /gemini/i.test(m.name || ''))
+        .map(m => ({ id: String(m.name || '').replace(/^models\//, ''), name: m.displayName || String(m.name || '').replace(/^models\//, ''), note: '' }))
+        .filter(m => m.id && !/embedding|aqa|imagen|veo|tts|image-generation|native-audio|live-/i.test(m.id))
+        .sort((a, b) => rank(spec, a.id) - rank(spec, b.id) || a.id.localeCompare(b.id));
+    }
+    const res = await send(apiBase('groq') + '/models', { headers: authHeaders('groq', key) }, 'Groq');
     if (!res.ok) throw httpError(res, 'Groq', (res.json && res.json.error && res.json.error.message) || '');
     return (res.json.data || [])
       .map(m => String(m.id || ''))
       .filter(id => id && !/whisper|tts|guard|safeguard|compound|embed|vision|orpheus|playai/i.test(id))
-      .map(id => PROVIDERS.groq.models.find(m => m.id === id) || { id, name: id, note: '' })
-      .sort((a, b) => rank(PROVIDERS.groq, a.id) - rank(PROVIDERS.groq, b.id) || a.id.localeCompare(b.id));
+      .map(id => spec.models.find(m => m.id === id) || { id, name: id, note: '' })
+      .sort((a, b) => rank(spec, a.id) - rank(spec, b.id) || a.id.localeCompare(b.id));
   }
 
-  window.AI = { PROVIDERS, PROVIDER_LIST, load, save, active, isConfigured, isBuiltIn, usingProxy, ready, providerName, parseResume, tailorResume, test, listModels, pickBest };
+  window.AI = { PROVIDERS, PROVIDER_LIST, load, save, active, alternates, isConfigured, isBuiltIn, usingProxy, ready, providerName, parseResume, tailorResume, test, listModels, pickBest };
 })();

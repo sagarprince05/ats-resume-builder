@@ -133,8 +133,14 @@
     const el = document.getElementById('step2');
     if (!el) return;
     const a = ai();
+    // Names the provider that actually answered once a rewrite is done.
+    const hint = () => {
+      const r = result();
+      const who = r && r.ai && r.providerName && !r.busy ? `Rewritten by <b>${esc(r.providerName)}</b>` : `Rewritten automatically by <b>${esc(a.name)}</b>`;
+      return `${who}. Every change is listed and nothing is invented.`;
+    };
     // The text box must never be rebuilt while the user is typing in it,
-    // or the cursor is lost on every keystroke. Update only the badge.
+    // or the cursor is lost on every keystroke. Update only the badge and hint.
     const existing = el.querySelector('#jdInput');
     if (existing && !force) {
       const done = jd().trim().length >= 20;
@@ -144,6 +150,8 @@
         const num = sec.querySelector('.step-num');
         if (num) num.innerHTML = done ? icon('check') : '2';
       }
+      const h = el.querySelector('.jd-hint');
+      if (h && a.on) h.innerHTML = hint();
       return;
     }
     // Forced rebuild: keep the cursor where it was if the user is mid-typing.
@@ -151,8 +159,8 @@
     const caret = hadFocus ? existing.selectionStart : null;
     const body = `<textarea id="jdInput" class="jd-input" rows="7" placeholder="Paste the full job posting here — responsibilities, requirements, preferred skills.">${esc(jd())}</textarea>
       ${a.on
-        ? `<div class="hint" style="margin-top:8px">Rewritten automatically by <b>${esc(a.name)}</b>. Every change is listed and nothing is invented.</div>`
-        : `<div class="ai-card" style="margin-top:10px"><div class="ai-icon">${icon('sparkles')}</div><div class="ai-text"><b>Add a Groq API key for a real rewrite</b><small>Groq is free: about 1,000 requests a day, no card needed. Without a key the resume is only reordered, not rewritten.</small></div><button type="button" class="btn btn-primary btn-sm" data-action="ai-settings">Set up</button></div>`}`;
+        ? `<div class="hint jd-hint" style="margin-top:8px">${hint()}</div>`
+        : `<div class="ai-card" style="margin-top:10px"><div class="ai-icon">${icon('sparkles')}</div><div class="ai-text"><b>Add a free AI key for a real rewrite</b><small>Groq (about 1,000 requests a day) or Google Gemini, no card needed. Add both and one covers for the other. Without a key the resume is only reordered, not rewritten.</small></div><button type="button" class="btn btn-primary btn-sm" data-action="ai-settings">Set up</button></div>`}`;
     el.innerHTML = stepShell(2, 'Paste the job description', jd().trim().length >= 20, body);
     if (hadFocus) {
       const nb = el.querySelector('#jdInput');

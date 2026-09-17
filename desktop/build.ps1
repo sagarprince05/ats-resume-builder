@@ -1,9 +1,11 @@
 # Builds the Windows desktop app.
 #   powershell -ExecutionPolicy Bypass -File desktop\build.ps1
-#   powershell -ExecutionPolicy Bypass -File desktop\build.ps1 -GroqKey "gsk_..."
+#   powershell -ExecutionPolicy Bypass -File desktop\build.ps1 -GroqKey "gsk_..." -GeminiKey "AQ...."
 #
-# Pass -GroqKey to bake your Groq API key into the build. The app then
-# rewrites resumes automatically and shows no API-key settings at all.
+# Pass -GroqKey and/or -GeminiKey to bake your API keys into the build. The
+# app then rewrites resumes automatically and shows no API-key settings at
+# all. With both, Groq is used first and Gemini takes over when it is busy
+# (-Provider gemini reverses that).
 # The key is written only into the staged copy inside the .exe, never into
 # the source tree. Anyone holding the .exe can extract it, and all usage
 # counts against that key, so only share builds you are happy with.
@@ -11,7 +13,10 @@
 # Output: dist\ATS Resume Builder Setup.exe  and  dist\ATS Resume Builder.exe
 param(
   [string]$GroqKey = "",
-  [string]$GroqModel = "openai/gpt-oss-120b"
+  [string]$GroqModel = "openai/gpt-oss-120b",
+  [string]$GeminiKey = "",
+  [string]$GeminiModel = "gemini-3.8-flash",
+  [string]$Provider = ""      # "" = Groq when it has a key, else Gemini
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -32,13 +37,14 @@ Copy-Item -Recurse css, js, vendor, icons $stage
 
 # Bake the API key into the staged copy only (never the source tree).
 $esc = { param($s) $s.Replace('\', '\\').Replace("'", "\'") }
-if ($GroqKey -ne "") {
-  $cfg = "window.APP_CONFIG = { groqKey: '$(& $esc $GroqKey)', groqModel: '$GroqModel' };`r`n"
+if ($GroqKey -ne "" -or $GeminiKey -ne "") {
+  $cfg = "window.APP_CONFIG = { groqKey: '$(& $esc $GroqKey)', groqModel: '$GroqModel', geminiKey: '$(& $esc $GeminiKey)', geminiModel: '$GeminiModel', provider: '$Provider', relay: '' };`r`n"
   # WriteAllText with an explicit encoding avoids the BOM that Set-Content adds.
   [IO.File]::WriteAllText((Join-Path $stage "js\config.js"), $cfg, (New-Object Text.UTF8Encoding $false))
-  Write-Host "Groq key baked in ($GroqModel). AI settings will be hidden in this build."
+  $which = @(); if ($GroqKey -ne "") { $which += "Groq ($GroqModel)" }; if ($GeminiKey -ne "") { $which += "Gemini ($GeminiModel)" }
+  Write-Host "Keys baked in: $($which -join ', '). AI settings will be hidden in this build."
 } else {
-  Write-Host "No key given: this build asks each user for their own Groq key."
+  Write-Host "No key given: this build asks each user for their own Groq or Gemini key."
 }
 
 python -m PyInstaller --noconfirm --clean --windowed --onefile `
@@ -64,9 +70,9 @@ Write-Host ""
 Write-Host "Built:"
 Write-Host "  dist\$appName Setup.exe   <- send this one; double-click installs it"
 Write-Host "  dist\$appName.exe         (portable, runs without installing)"
-if ($GroqKey -eq "") {
+if ($GroqKey -eq "" -and $GeminiKey -eq "") {
   Write-Host ""
-  Write-Host "This build has no AI key, so it will ask each user for their own Groq key."
+  Write-Host "This build has no AI key, so it will ask each user for their own."
   Write-Host "To bake yours in and hide all key settings, rebuild with:"
-  Write-Host "  powershell -ExecutionPolicy Bypass -File desktop\build.ps1 -GroqKey `"gsk_...`""
+  Write-Host "  powershell -ExecutionPolicy Bypass -File desktop\build.ps1 -GroqKey `"gsk_...`" -GeminiKey `"AQ....`""
 }

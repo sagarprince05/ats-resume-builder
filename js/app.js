@@ -161,13 +161,13 @@
     if (a.key) {
       return `<div class="ai-card on"><div class="ai-icon">${icon('sparkles')}</div><div class="ai-text"><b>AI rewriting is on · ${esc(a.spec.name)} ${esc(a.model)}</b><small>Uploaded resumes are read by AI and the resume is rewritten for each job description. Nothing is invented; every change is listed.</small></div><button type="button" class="btn btn-sm" data-action="ai-settings">Change</button></div>`;
     }
-    return `<div class="ai-card"><div class="ai-icon">${icon('sparkles')}</div><div class="ai-text"><b>Turn on AI rewriting</b><small>Add a free Groq API key and the resume will be properly rewritten for each job description, not just reordered.</small></div><button type="button" class="btn btn-primary btn-sm" data-action="ai-settings">Set up</button></div>`;
+    return `<div class="ai-card"><div class="ai-icon">${icon('sparkles')}</div><div class="ai-text"><b>Turn on AI rewriting</b><small>Add a free Groq or Google Gemini API key and the resume will be properly rewritten for each job description, not just reordered. With both keys, Gemini takes over whenever Groq is busy.</small></div><button type="button" class="btn btn-primary btn-sm" data-action="ai-settings">Set up</button></div>`;
   }
   function refreshAiUi() {
     const a = window.AI.active();
     // Built-in key or server relay: hide the whole AI settings entry.
     $('btnAi').hidden = window.AI.isBuiltIn();
-    if (!window.AI.isBuiltIn()) $('aiMenuNote').textContent = a.key ? `On · ${a.model}` : 'Add your free Groq API key';
+    if (!window.AI.isBuiltIn()) $('aiMenuNote').textContent = a.key ? `On · ${a.spec.name}${window.AI.alternates().length ? ' + backup' : ''}` : 'Add a free Groq or Gemini key';
     window.Editor.refreshAiCards();
     window.Flow.refreshAll();
   }
@@ -180,6 +180,8 @@
     const draft = JSON.parse(JSON.stringify(cfg));
     const liveModels = {};   // provider -> [{id,name,note}]
 
+    const providerTabs = () => window.AI.PROVIDER_LIST.map(p =>
+      `<button type="button" data-prov="${p.id}" class="${draft.provider === p.id ? 'active' : ''}">${esc(p.name)}${draft[p.id].key ? ' ✓' : ''}</button>`).join('');
     const modelOptions = p => {
       const spec = window.AI.PROVIDERS[p];
       const list = liveModels[p] || spec.models;
@@ -231,8 +233,9 @@
     modal({
       title: 'AI settings',
       confirmText: 'Save', cancelText: 'Cancel',
-      body: `<p>The AI layer calls <b>Groq</b> with <b>your own API key</b>. The key is stored only on this device and sent only to Groq. Usage counts against your Groq account.</p>
-        <div id="aiFields" style="margin-top:12px">${fields()}</div>
+      body: `<p>The AI layer calls the provider you choose with <b>your own API key</b>. Keys are stored only on this device and sent only to that provider. Add both: the selected one is used first and the other takes over when it is busy.</p>
+        <div class="seg" id="aiProv" style="margin:12px 0 4px">${providerTabs()}</div>
+        <div id="aiFields">${fields()}</div>
         <label class="check"><input type="checkbox" id="aiParse"${draft.useForParse ? ' checked' : ''}> Also use AI to read uploaded resumes (much more accurate than pattern matching)</label>
         <div class="hint">To turn AI off, clear the key and save.</div>
         <div class="status-line" id="aiStatus"></div>`,
@@ -260,11 +263,22 @@
     }
     function redraw() { $$('aiFields').innerHTML = fields(); }
 
+    $$('aiProv').addEventListener('click', e => {
+      const b = e.target.closest('[data-prov]');
+      if (!b || b.dataset.prov === draft.provider) return;
+      stash();
+      draft.provider = b.dataset.prov;
+      Array.from($$('aiProv').children).forEach(x => x.classList.toggle('active', x.dataset.prov === draft.provider));
+      redraw();
+      $$('aiStatus').textContent = '';
+      if (!liveModels[draft.provider]) loadModels(draft.provider, draft[draft.provider].key);
+    });
     // Refresh the list whenever a key is pasted in.
     $$('aiFields').addEventListener('change', e => {
       if (e.target.id !== 'aiKey') return;
       const p = draft.provider, key = e.target.value.trim();
       if (key && key !== draft[p].key) { draft[p].key = key; liveModels[p] = null; loadModels(p, key); }
+      Array.from($$('aiProv').children).forEach(x => { x.textContent = window.AI.PROVIDERS[x.dataset.prov].name + (draft[x.dataset.prov].key ? ' ✓' : ''); });
     });
 
     const testBtn = $$('aiTest');
@@ -397,7 +411,7 @@
       if (title && title.toLowerCase() !== res.state.personal.title.trim().toLowerCase()) changes.push({ text: `The posting's title is "${title}". Your headline was kept as "${res.state.personal.title}".`, action: { type: 'use-title', title } });
       const pname = res.providerName || window.AI.providerName();
       lastTailor = { changes, count: res.changes.length, at: Date.now(), ai: true, usage: res.usage, model: res.model, providerName: pname, fellBackFrom: res.fellBackFrom, coaching: res.coaching || [] };
-      if (res.fellBackFrom) changes.unshift({ text: `The ${res.fellBackFrom} model was busy, so ${res.model} was used instead.` });
+      if (res.fellBackFrom) changes.unshift({ text: `${res.fellBackFrom} was busy, so ${pname} (${res.model}) was used instead.` });
       // Keep the user's place if they are still typing in the job description box.
       const jdBox = document.getElementById('jdInput');
       const wasFocused = jdBox && document.activeElement === jdBox;

@@ -1,6 +1,6 @@
 /* Service worker: network first, cache fallback, so the browser-installed
    app keeps working offline. The desktop build does not register it. */
-const CACHE = 'ats-resume-builder-v8';
+const CACHE = 'ats-resume-builder-v9';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest',
   './css/app.css', './css/resume.css',

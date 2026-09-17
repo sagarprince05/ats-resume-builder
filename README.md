@@ -37,7 +37,7 @@ Or open `tests/e2e.html?site=/index.html` from any static server to watch them i
 
 ## Host it online for free
 
-The same app runs as a website, so anyone can use it from a link on their own device. `hostinguild-site.ps1` assembles an upload-ready folder with a tiny relay function that keeps your Groq key on the server; visitors never see or need a key. Cloudflare Pages and Netlify both host it for free. Step-by-step instructions are in [hosting/HOSTING.md](hosting/HOSTING.md).
+The same app runs as a website, so anyone can use it from a link on their own device. `hosting\build-site.ps1` assembles an upload-ready folder with a tiny relay function that keeps your Groq and Gemini keys on the server; visitors never see or need a key. Cloudflare Pages and Netlify both host it for free. Step-by-step instructions are in [hosting/HOSTING.md](hosting/HOSTING.md).
 
 ## Build the Windows app yourself
 
@@ -47,13 +47,13 @@ Requires Python 3 (PyInstaller is installed automatically):
 powershell -ExecutionPolicy Bypass -File desktop\build.ps1
 ```
 
-This produces `dist\ATS Resume Builder Setup.exe` (a one-file installer to send to others) and `dist\ATS Resume Builder.exe` (portable). To bake your Groq API key into the build so the finished app never shows any key settings, double-click `Build with my key.bat` on the Desktop or run:
+This produces `dist\ATS Resume Builder Setup.exe` (a one-file installer to send to others) and `dist\ATS Resume Builder.exe` (portable). To bake your API keys into the build so the finished app never shows any key settings, double-click `Build with my key.bat` on the Desktop (it asks for a Groq key and a Gemini key; either one is enough) or run:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File desktop\build.ps1 -GroqKey "gsk_..."
+powershell -ExecutionPolicy Bypass -File desktop\build.ps1 -GroqKey "gsk_..." -GeminiKey "AQ...."
 ```
 
-Anyone holding the exe can extract a baked-in key, so only bake a key you are willing to revoke. The exe starts a tiny local server and opens the app in Microsoft Edge or Chrome in app mode, so printing to PDF and downloads use the normal browser dialogs. The exe is not code-signed, so SmartScreen may ask for confirmation on first run.
+Anyone holding the exe can extract a baked-in key, so only bake keys you are willing to revoke. The exe starts a tiny local server and opens the app in Microsoft Edge or Chrome in app mode, so printing to PDF and downloads use the normal browser dialogs. The exe is not code-signed, so SmartScreen may ask for confirmation on first run.
 
 ## How it works
 
@@ -67,15 +67,22 @@ The rewrite runs automatically as soon as both are filled in, and again whenever
 
 Everything else — editing sections by hand, templates, fonts, section order, the ATS score breakdown — sits behind **Edit details by hand** at the bottom, and **Simple view** brings you back.
 
-**AI layer (optional, recommended).** Open the ⋯ menu → AI settings and paste your own Groq API key (free at console.groq.com → API Keys, no card, about 1,000 requests a day). Groq runs open models such as GPT-OSS 120B and Llama 3.3 70B and is very fast. The model dropdown is filled from your own account as soon as a key is present, so it can never offer a model you cannot use; if a saved model has since been retired the app switches to the best available one and says so. With a key set:
+**AI layer (optional, recommended).** Open the ⋯ menu → AI settings and paste your own API key. Two free providers are supported:
+
+| Provider | Key from | Free allowance |
+|---|---|---|
+| Groq (used first) | console.groq.com → API Keys | About 1,000 requests a day, no card. GPT-OSS 120B, Llama 3.3 70B. Very fast. |
+| Google Gemini (backup) | aistudio.google.com → Get API key | Lower daily limits, no card. Gemini Flash. |
+
+Either key alone works. With both, the selected provider is used first and the other takes over automatically whenever it is busy on every model, so a rewrite almost never fails outright. The model dropdown is filled from your own account as soon as a key is present, so it can never offer a model you cannot use; if a saved model has since been retired the app switches to the best available one and says so. With a key set:
 - uploaded resumes are read by the model and mapped into the fields far more accurately than pattern matching;
 - every job-description change triggers a real rewrite: the summary is rewritten to mirror the posting, bullets are rephrased with the posting's terminology and strong verbs, skills are reordered and phrased the way the posting phrases them, and the headline is adjusted when it honestly fits.
 
-Guardrails are built into the prompt and enforced with a strict output schema: no new employers, titles, dates, degrees, certifications, tools or numbers can be introduced, positions cannot be added, merged or reordered, and every change is listed. The rewrite always starts from the pre-optimisation version of your resume, so switching postings never compounds edits; loading or uploading a different resume resets that baseline. The key is stored only on your device and sent only to Groq. If a call fails (bad key, rate limit, safety block, truncated reply) the tool says why, offers Retry, and falls back to the built-in rule-based reordering so your resume is never left damaged. Without a key it uses that rule-based reordering only.
+Guardrails are built into the prompt and enforced with a strict output schema: no new employers, titles, dates, degrees, certifications, tools or numbers can be introduced, positions cannot be added, merged or reordered, and every change is listed. The rewrite always starts from the pre-optimisation version of your resume, so switching postings never compounds edits; loading or uploading a different resume resets that baseline. Keys are stored only on your device and sent only to the provider they belong to. If a call fails (bad key, rate limit, safety block, truncated reply) the tool says why, offers Retry, and falls back to the built-in rule-based reordering so your resume is never left damaged. Without a key it uses that rule-based reordering only.
 
-If the chosen model is busy or rate-limited, the app retries briefly and then moves down the list (GPT-OSS 120B → Llama 3.3 70B → GPT-OSS 20B → Llama 3.1 8B), noting the switch in the change list, so a rewrite almost never fails outright.
+If the chosen model is busy or rate-limited, the app retries briefly and then moves down the provider's list (Groq: GPT-OSS 120B → Llama 3.3 70B → GPT-OSS 20B → Llama 3.1 8B; Gemini: 3.8 Flash → 3.7 Flash → 3.5 Flash Lite → …). If every model of that provider is busy and the other provider has a key, the request goes there. Each switch is noted in the change list.
 
-Groq is called through its OpenAI-compatible chat endpoint with a strict JSON schema, falling back to plain JSON mode for models that do not support schemas.
+Groq is called through its OpenAI-compatible chat endpoint with a strict JSON schema, falling back to plain JSON mode for models that do not support schemas. Gemini is called through `generateContent` with a response schema.
 
 A sample resume to try the upload with is in `samples/`.
 
