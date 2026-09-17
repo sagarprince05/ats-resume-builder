@@ -1,0 +1,23 @@
+# Netlify, when the site is connected to the GitHub repo (Add new site ->
+# Import an existing project). Builds the site folder and serves it with
+# the key-holding relay. Set GROQ_API_KEY and/or GEMINI_API_KEY under
+# Site configuration -> Environment variables.
+[build]
+  command = "bash hosting/build-site.sh netlify"
+  publish = "build/site-netlify"
+  functions = "build/site-netlify/netlify/functions"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/js/config.js"
+  [headers.values]
+    Cache-Control = "no-cache"

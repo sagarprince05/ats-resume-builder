@@ -17,6 +17,14 @@ Groq's free key allows roughly 1,000 rewrites a day, which is the real
 ceiling; a Gemini key next to it takes over whenever Groq is busy. Both
 hosts sit far above those numbers.
 
+## Which route hides the key?
+
+| Route | Key visible to visitors? | Who pays quota |
+|---|---|---|
+| Cloudflare Pages or Netlify (relay) | No. The key stays in the host's secret store; the app shows no key settings at all. | You (shared free quota) |
+| GitHub Pages | The app asks each visitor for their own free key. | Each visitor |
+| Desktop exe built with "Build with my key.bat" | No. The key is inside the exe; no settings shown. | You |
+
 ## 1. Build the site folder
 
 From the project folder:
@@ -42,24 +50,38 @@ or `-Target cloudflare`. This creates `build\site-netlify` (or
 Updating later: run the build script again and drag the new folder onto
 **Deploys** in the same site.
 
-## 2b. Cloudflare Pages (bigger free tier)
+## 2b. Cloudflare Pages connected to the GitHub repo (recommended: keys hidden, updates automatic)
 
-1. Sign up at github.com and cloudflare.com (both free).
-2. Create a new GitHub repository (private is fine) and upload the contents of
-   `build\site-cloudflare` to it (GitHub's web uploader accepts a dragged folder,
-   or use GitHub Desktop).
-3. In Cloudflare: **Workers & Pages → Create → Pages → Connect to Git**, pick the repo.
-   Framework preset **None**, build command empty, build output directory `/`. Deploy.
+The project repository already contains everything Cloudflare needs. Once
+connected, every push to `main` rebuilds and redeploys the site, and the
+keys live only in Cloudflare's secret store.
+
+1. Sign up at cloudflare.com (free, no card).
+2. **Workers & Pages → Create → Pages → Connect to Git** → authorize GitHub → pick
+   the `ats-resume-builder` repository.
+3. Build settings:
+   - Framework preset: **None**
+   - Build command: `bash hosting/build-site.sh cloudflare`
+   - Build output directory: `build/site-cloudflare`
+   Click **Save and Deploy**. The first deploy takes about a minute.
 4. In the Pages project: **Settings → Variables and Secrets → Add**.
    Type **Secret**, name `GROQ_API_KEY`, value = your Groq key. Save.
-   Optionally add a second secret `GEMINI_API_KEY` as the backup.
-5. **Deployments → Retry deployment** (or push any change) so the secret is applied.
+   Add a second secret `GEMINI_API_KEY` for the backup provider if you have one.
+5. **Deployments → (latest) → Retry deployment**, so the secrets are applied.
+6. Open the `*.pages.dev` address. There must be no key card and no AI settings
+   entry; `/api/health` must show `"keys":{"groq":true,...}`.
 
-The relay lives in `functions/api/[[path]].js` and is deployed
-automatically with the site. Updating later: upload the new files to the
-repo; Cloudflare redeploys on every push.
+Optional: **Custom domains** lets you attach your own domain for free.
 
-## 2c. GitHub Pages (automatic, visitors use their own key)
+### Netlify connected to the repo
+
+The same works on Netlify: **Add new site → Import an existing project →
+GitHub → the repo**. The `netlify.toml` at the repository root already sets
+the build command, publish folder and functions folder, so just click
+**Deploy**, then add `GROQ_API_KEY` / `GEMINI_API_KEY` under **Site
+configuration → Environment variables** and trigger a redeploy.
+
+## 2c. GitHub Pages (automatic, but visitors must use their own key)
 
 GitHub Pages cannot run the relay, so this route asks each visitor for
 their own free Groq or Gemini key (the app shows the "Add a free AI key"
